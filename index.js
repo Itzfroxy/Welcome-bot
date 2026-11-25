@@ -35,36 +35,103 @@ function saveData(data) {
   fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
 }
 
+const admin = PermissionsBitField.Flags.ManageGuild;
+
 const commands = [
   new SlashCommandBuilder()
     .setName('setwelcome')
-    .setDescription('Set the welcome channel')
+    .setDescription('Set welcome channel')
     .addChannelOption(option =>
       option.setName('channel')
-        .setDescription('Select welcome channel')
+        .setDescription('Welcome channel')
         .addChannelTypes(ChannelType.GuildText)
         .setRequired(true)
     )
-    .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild),
+    .setDefaultMemberPermissions(admin),
+
+  new SlashCommandBuilder()
+    .setName('welcomemessage')
+    .setDescription('Edit welcome message')
+    .addStringOption(option =>
+      option.setName('message')
+        .setDescription('New welcome message')
+        .setMaxLength(4000)
+        .setRequired(true)
+    )
+    .setDefaultMemberPermissions(admin),
+
+  new SlashCommandBuilder()
+    .setName('welcometitle')
+    .setDescription('Edit welcome embed title')
+    .addStringOption(option =>
+      option.setName('title')
+        .setDescription('New welcome title')
+        .setMaxLength(256)
+        .setRequired(true)
+    )
+    .setDefaultMemberPermissions(admin),
+
+  new SlashCommandBuilder()
+    .setName('welcomecolor')
+    .setDescription('Change welcome embed color')
+    .addStringOption(option =>
+      option.setName('color')
+        .setDescription('Hex color, example #FF0000')
+        .setRequired(true)
+    )
+    .setDefaultMemberPermissions(admin),
 
   new SlashCommandBuilder()
     .setName('welcometest')
-    .setDescription('Test the welcome message')
-    .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
+    .setDescription('Preview welcome message')
+    .setDefaultMemberPermissions(admin)
 ];
+
+function getConfig(guildId) {
+  const data = getData();
+
+  return data[guildId] || {
+    channel: null,
+    message: 'Welcome {user} to {server}!',
+    title: 'Welcome to {server}!',
+    color: '#75D6A5'
+  };
+}
+
+function createWelcomeEmbed(member) {
+  const config = getConfig(member.guild.id);
+
+  const replace = text => text
+    .replaceAll('{user}', `<@${member.id}>`)
+    .replaceAll('{server}', member.guild.name)
+    .replaceAll('{count}', String(member.guild.memberCount));
+
+  return new EmbedBuilder()
+    .setColor(config.color)
+    .setTitle(replace(config.title))
+    .setDescription(replace(config.message))
+    .setThumbnail(
+      member.user.displayAvatarURL({ size: 256 })
+    )
+    .setFooter({ text: member.guild.name })
+    .setTimestamp();
+}
 
 client.once('ready', async () => {
   console.log(`${client.user.tag} is online!`);
 
-  const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
-
   try {
+    const rest = new REST({ version: '10' })
+      .setToken(process.env.TOKEN);
+
     await rest.put(
       Routes.applicationGuildCommands(
         process.env.CLIENT_ID,
         process.env.GUILD_ID
       ),
-      { body: commands.map(command => command.toJSON()) }
+      {
+        body: commands.map(command => command.toJSON())
+      }
     );
 
     console.log('Welcome commands registered!');
@@ -73,30 +140,17 @@ client.once('ready', async () => {
   }
 });
 
-function createWelcomeEmbed(member) {
-  return new EmbedBuilder()
-    .setColor('#75D6A5')
-    .setTitle(`Welcome to ${member.guild.name}!`)
-    .setDescription(
-      `Welcome ${member}!\n\n` +
-      `We are happy to have you in our community.\n\n` +
-      `You are member number **${member.guild.memberCount}**.`
-    )
-    .setThumbnail(member.user.displayAvatarURL({ size: 256 }))
-    .setFooter({ text: member.guild.name })
-    .setTimestamp();
-}
-
 client.on('guildMemberAdd', async member => {
   try {
-    const data = getData();
-    const channelId = data[member.guild.id];
+    const config = getConfig(member.guild.id);
 
-    if (!channelId) return;
+    if (!config.channel) return;
 
-    const channel = member.guild.channels.cache.get(channelId);
+    const channel = await member.guild.channels.fetch(
+      config.channel
+    );
 
-    if (!channel) return;
+    if (!channel || !channel.isTextBased()) return;
 
     await channel.send({
       embeds: [createWelcomeEmbed(member)]
@@ -109,15 +163,67 @@ client.on('guildMemberAdd', async member => {
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
-  if (interaction.commandName === 'setwelcome') {
-    const channel = interaction.options.getChannel('channel');
+  if (!interaction.guild) return;
 
-    const data = getData();
-    data[interaction.guildId] = channel.id;
+  const guildId = interaction.guildId;
+  const data = getData();
+
+  if (!data[guildId]) {
+    data[guildId] = {
+      channel: null,
+      message: 'Welcome {user} to {server}!',
+      title: 'Welcome to {server}!',
+      color: '#75D6A5'
+    };
+  }
+
+  const config = data[guildId];
+
+  if (interaction.commandName === 'setwelcome') {
+    config.channel = interaction.options.getChannel('channel').id;
     saveData(data);
 
     return interaction.reply({
-      content: `Welcome channel successfully set to ${channel}!`,
+      content: 'Welcome channel updated successfully!',
+      ephemeral: true
+    });
+  }
+
+  if (interaction.commandName === 'welcomemessage') {
+    config.message = interaction.options.getString('message');
+    saveData(data);
+
+    return interaction.reply({
+      content: 'Welcome message updated successfully!',
+      ephemeral: true
+    });
+  }
+
+  if (interaction.commandName === 'welcometitle') {
+    config.title = interaction.options.getString('title');
+    saveData(data);
+
+    return interaction.reply({
+      content: 'Welcome title updated successfully!',
+      ephemeral: true
+    });
+  }
+
+  if (interaction.commandName === 'welcomecolor') {
+    const color = interaction.options.getString('color');
+
+    if (!/^#[0-9A-Fa-f]{6}$/.test(color)) {
+      return interaction.reply({
+        content: 'Invalid color! Use HEX format like #FF0000.',
+        ephemeral: true
+      });
+    }
+
+    config.color = color;
+    saveData(data);
+
+    return interaction.reply({
+      content: 'Welcome embed color updated!',
       ephemeral: true
     });
   }
@@ -131,4 +237,3 @@ client.on('interactionCreate', async interaction => {
 });
 
 client.login(process.env.TOKEN);
-          
